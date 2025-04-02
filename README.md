@@ -2,6 +2,13 @@
 
 Este projeto é um scraper para coletar dados da tabela FIPE (Fundação Instituto de Pesquisas Econômicas) de veículos. Ele coleta referências, marcas, modelos e valores dos veículos disponíveis no site da FIPE.
 
+## Funcionalidades
+
+- Extração de marcas de veículos por tipo (carro, moto, caminhão) e referência
+- Armazenamento em banco de dados PostgreSQL
+- Reprocessamento de referências com falhas
+- Reprocessamento de referências que não retornaram marcas
+
 ## Requisitos
 
 - Python 3.8+
@@ -80,6 +87,52 @@ Para limpar o banco de dados (se necessário):
 python limpar_banco.py
 ```
 
+### Extração de Marcas
+
+Para extrair marcas de veículos:
+
+```bash
+python gerenciar_marcas.py
+```
+
+O script irá:
+1. Acessar o site da FIPE
+2. Para cada tipo de veículo (carro, moto, caminhão):
+   - Selecionar o tipo
+   - Para cada referência disponível:
+     - Selecionar a referência
+     - Extrair as marcas
+     - Salvar no banco de dados
+
+### Reprocessamento de Referências com Falhas
+
+Para reprocessar referências que falharam durante a extração:
+
+```bash
+python reprocessar_marcas.py
+```
+
+O script irá:
+1. Carregar as referências que falharam do arquivo `referencias_para_reprocessar.txt`
+2. Para cada referência:
+   - Selecionar o tipo de veículo correto
+   - Tentar extrair as marcas novamente
+   - Salvar no banco de dados
+
+### Reprocessamento de Referências sem Marcas
+
+Para reprocessar referências que não retornaram marcas:
+
+```bash
+python analisar_log.py
+python reprocessar_marcas.py
+```
+
+O processo irá:
+1. Analisar o log de processamento para identificar referências que não retornaram marcas
+2. Salvar essas referências no arquivo `referencias_sem_marcas.txt`
+3. Reprocessar apenas essas referências específicas
+
 ## Estrutura do Banco de Dados
 
 O banco de dados possui as seguintes tabelas:
@@ -119,6 +172,7 @@ O banco de dados possui as seguintes tabelas:
 Os scripts geram logs detalhados das operações realizadas. Os arquivos de log são criados no diretório do projeto com os seguintes nomes:
 - `referencias.log`: Log das operações com referências
 - `marcas.log`: Log das operações com marcas
+- `reprocessar_marcas.log`: Log do reprocessamento de referências
 
 ## Observações
 
