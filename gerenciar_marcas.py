@@ -1,10 +1,10 @@
+import psycopg2
+import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-import psycopg2
-import logging
 import time
 import config
 
@@ -13,15 +13,15 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('marcas_2025.log'),
+        logging.FileHandler('marcas.log'),
         logging.StreamHandler()
     ]
 )
 
-def get_referencias_2025(cur):
-    """Obtém a lista de referências de 2025 do banco"""
+def get_referencias(cur):
+    """Obtém todas as referências do banco"""
     try:
-        cur.execute("SELECT id, mes_ano FROM referencias WHERE ano = 2025 ORDER BY mes")
+        cur.execute("SELECT id, mes_ano FROM referencias ORDER BY ano DESC, mes DESC")
         return [(row[0], row[1]) for row in cur.fetchall()]
     except Exception as e:
         logging.error(f"Erro ao obter referências: {e}")
@@ -39,6 +39,46 @@ def get_marcas_existentes(cur, tipo_veiculo, referencia_id):
         logging.error(f"Erro ao obter marcas existentes: {e}")
         return []
 
+def get_marcas_site(driver, referencia, wait):
+    """Obtém a lista de marcas do site para uma referência"""
+    try:
+        # Encontra e seleciona a referência
+        select_ref = wait.until(
+            EC.presence_of_element_located((By.ID, "selectTabelaReferenciacarro"))
+        )
+        # Usa JavaScript para tornar o elemento visível
+        driver.execute_script("arguments[0].style.display = 'block';", select_ref)
+        select = Select(select_ref)
+        select.select_by_visible_text(referencia)
+        logging.info(f"Referência {referencia} selecionada")
+        
+        # Aguarda o carregamento das marcas
+        time.sleep(3)
+        
+        # Encontra e obtém a lista de marcas
+        select_marcas = wait.until(
+            EC.presence_of_element_located((By.ID, "selectMarcacarro"))
+        )
+        # Usa JavaScript para tornar o elemento visível
+        driver.execute_script("arguments[0].style.display = 'block';", select_marcas)
+        select = Select(select_marcas)
+        
+        # Obtém todas as opções do select
+        options = select.options
+        marcas = []
+        
+        # Itera sobre as opções para obter o texto
+        for option in options:
+            if option.text and option.text.strip():
+                marcas.append(option.text.strip())
+        
+        logging.info(f"Encontradas {len(marcas)} marcas para a referência {referencia}")
+        return marcas
+        
+    except Exception as e:
+        logging.error(f"Erro ao obter marcas do site para referência {referencia}: {e}")
+        return []
+
 def main():
     try:
         # Conecta ao banco de dados
@@ -46,9 +86,13 @@ def main():
         conn = psycopg2.connect(**config.DB_CONFIG)
         cur = conn.cursor()
         
-        # Obtém as referências de 2025 do banco
-        referencias = get_referencias_2025(cur)
-        logging.info(f"Encontradas {len(referencias)} referências de 2025 no banco")
+        # Obtém as referências do banco
+        referencias = get_referencias(cur)
+        logging.info(f"Encontradas {len(referencias)} referências no banco")
+        
+        if not referencias:
+            logging.info("Não há referências para processar")
+            return
         
         # Configuração do Chrome
         chrome_options = Options()
@@ -74,7 +118,7 @@ def main():
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(5)
         
-        # Tenta encontrar o elemento <a> com data-slug="carro" dentro da estrutura correta
+        # Tenta encontrar o elemento <a> com data-slug="carro"
         try:
             botao = driver.find_element(By.CSS_SELECTOR, 'div.tab-veiculos ul li.ilustra a[data-slug="carro"]')
             # Usa JavaScript para clicar no elemento
@@ -95,37 +139,12 @@ def main():
                 # Obtém marcas existentes para esta referência
                 marcas_existentes = get_marcas_existentes(cur, 'carro', referencia_id)
                 
-                # Encontra e seleciona a referência
-                select_ref = wait.until(
-                    EC.presence_of_element_located((By.ID, "selectTabelaReferenciacarro"))
-                )
-                # Usa JavaScript para tornar o elemento visível
-                driver.execute_script("arguments[0].style.display = 'block';", select_ref)
-                select = Select(select_ref)
-                select.select_by_visible_text(referencia)
-                logging.info(f"Referência {referencia} selecionada")
+                # Obtém marcas do site
+                marcas = get_marcas_site(driver, referencia, wait)
                 
-                # Aguarda o carregamento das marcas
-                time.sleep(3)
-                
-                # Encontra e obtém a lista de marcas
-                select_marcas = wait.until(
-                    EC.presence_of_element_located((By.ID, "selectMarcacarro"))
-                )
-                # Usa JavaScript para tornar o elemento visível
-                driver.execute_script("arguments[0].style.display = 'block';", select_marcas)
-                select = Select(select_marcas)
-                
-                # Obtém todas as opções do select
-                options = select.options
-                marcas = []
-                
-                # Itera sobre as opções para obter o texto
-                for option in options:
-                    if option.text and option.text.strip():
-                        marcas.append(option.text.strip())
-                
-                logging.info(f"Encontradas {len(marcas)} marcas para a referência {referencia}")
+                if not marcas:
+                    logging.warning(f"Nenhuma marca encontrada para a referência {referencia}")
+                    continue
                 
                 # Filtra apenas as marcas que não existem no banco para esta referência
                 novas_marcas = [marca for marca in marcas if marca not in marcas_existentes]
