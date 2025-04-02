@@ -1,0 +1,16 @@
+# Arquivos de log
+*.log
+
+# Arquivos de ambiente
+.env
+
+# Ambiente virtual
+venv/
+
+# Dados do PostgreSQL
+postgres_data/
+
+# Arquivos do sistema
+.DS_Store
+__pycache__/
+*.pyc 
