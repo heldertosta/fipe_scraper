@@ -1,0 +1,5 @@
+202,julho/2008,carro
+8,setembro/2024,caminhao
+11,junho/2024,caminhao
+16,janeiro/2024,caminhao
+32,setembro/2022,caminhao
