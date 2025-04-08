@@ -7,16 +7,10 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import config
+from utils import setup_logging
 
 # Configuração do logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('marcas.log'),
-        logging.StreamHandler()
-    ]
-)
+setup_logging(__file__)
 
 def get_referencias(cur):
     """Obtém todas as referências do banco"""
@@ -27,12 +21,28 @@ def get_referencias(cur):
         logging.error(f"Erro ao obter referências: {e}")
         return []
 
-def get_marcas_existentes(cur, tipo_veiculo, referencia_id):
+def get_tipo_veiculo_id(cur, tipo_veiculo_nome):
+    """Obtém o ID do tipo de veículo pelo nome"""
+    try:
+        cur.execute(
+            "SELECT id FROM tipo_veiculo WHERE descricao = %s",
+            (tipo_veiculo_nome,)
+        )
+        result = cur.fetchone()
+        if result:
+            return result[0]
+        else:
+            raise Exception(f"Tipo de veículo não encontrado: {tipo_veiculo_nome}")
+    except Exception as e:
+        logging.error(f"Erro ao obter ID do tipo de veículo: {e}")
+        raise
+
+def get_marcas_existentes(cur, tipo_veiculo_id, referencia_id):
     """Obtém a lista de marcas já existentes no banco para um tipo de veículo e referência"""
     try:
         cur.execute(
-            "SELECT nome FROM marcas WHERE tipo_veiculo = %s AND referencia_id = %s",
-            (tipo_veiculo, referencia_id)
+            "SELECT nome FROM marca WHERE tipo_veiculo = %s AND referencia_id = %s",
+            (tipo_veiculo_id, referencia_id)
         )
         return [row[0] for row in cur.fetchall()]
     except Exception as e:
@@ -79,10 +89,14 @@ def get_marcas_site(driver, referencia, wait, tipo_veiculo):
             options = select.options
             marcas = []
             
-            # Itera sobre as opções para obter o texto
+            # Itera sobre as opções para obter o texto e o value (fipeid)
             for option in options:
                 if option.text and option.text.strip():
-                    marcas.append(option.text.strip())
+                    marca = {
+                        'nome': option.text.strip().upper(),
+                        'fipeid': int(option.get_attribute('value'))
+                    }
+                    marcas.append(marca)
             
             logging.info(f"Encontradas {len(marcas)} marcas para a referência {referencia} do tipo {tipo_veiculo}")
             return marcas
@@ -94,44 +108,50 @@ def get_marcas_site(driver, referencia, wait, tipo_veiculo):
             logging.warning(f"Tentativa {attempt + 1} falhou, tentando novamente...")
             time.sleep(2)  # Espera antes de tentar novamente
 
-def processar_tipo_veiculo(driver, wait, cur, conn, referencias, tipo_veiculo):
+def processar_tipo_veiculo(driver, wait, cur, conn, referencias, tipo_veiculo_nome):
     """Processa as marcas para um tipo específico de veículo"""
-    if not selecionar_tipo_veiculo(driver, tipo_veiculo):
+    if not selecionar_tipo_veiculo(driver, tipo_veiculo_nome):
+        return
+    
+    try:
+        tipo_veiculo_id = get_tipo_veiculo_id(cur, tipo_veiculo_nome)
+    except Exception as e:
+        logging.error(f"Não foi possível processar o tipo de veículo {tipo_veiculo_nome}: {e}")
         return
     
     for referencia_id, referencia in referencias:
-        logging.info(f"Processando referência: {referencia} para {tipo_veiculo}")
+        logging.info(f"Processando referência: {referencia} para {tipo_veiculo_nome}")
         
         try:
             # Obtém marcas existentes para esta referência
-            marcas_existentes = get_marcas_existentes(cur, tipo_veiculo, referencia_id)
+            marcas_existentes = get_marcas_existentes(cur, tipo_veiculo_id, referencia_id)
             
             # Obtém marcas do site
-            marcas = get_marcas_site(driver, referencia, wait, tipo_veiculo)
+            marcas = get_marcas_site(driver, referencia, wait, tipo_veiculo_nome)
             
             if not marcas:
-                logging.warning(f"Nenhuma marca encontrada para a referência {referencia} do tipo {tipo_veiculo}")
+                logging.warning(f"Nenhuma marca encontrada para a referência {referencia} do tipo {tipo_veiculo_nome}")
                 continue
             
             # Filtra apenas as marcas que não existem no banco para esta referência
-            novas_marcas = [marca for marca in marcas if marca not in marcas_existentes]
+            novas_marcas = [marca for marca in marcas if marca['nome'] not in marcas_existentes]
             
             if not novas_marcas:
-                logging.info(f"Não há novas marcas para adicionar para a referência {referencia} do tipo {tipo_veiculo}")
+                logging.info(f"Não há novas marcas para adicionar para a referência {referencia} do tipo {tipo_veiculo_nome}")
                 continue
             
             # Insere as novas marcas no banco
             for marca in novas_marcas:
                 cur.execute(
-                    "INSERT INTO marcas (nome, tipo_veiculo, referencia_id) VALUES (%s, %s, %s)",
-                    (marca, tipo_veiculo, referencia_id)
+                    "INSERT INTO marca (nome, fipeid, tipo_veiculo, referencia_id) VALUES (%s, %s, %s, %s)",
+                    (marca['nome'], marca['fipeid'], tipo_veiculo_id, referencia_id)
                 )
             
             conn.commit()
-            logging.info(f"Adicionadas {len(novas_marcas)} novas marcas para a referência {referencia} do tipo {tipo_veiculo}")
+            logging.info(f"Adicionadas {len(novas_marcas)} novas marcas para a referência {referencia} do tipo {tipo_veiculo_nome}")
             
         except Exception as e:
-            logging.error(f"Erro ao processar referência {referencia} do tipo {tipo_veiculo}: {str(e)}")
+            logging.error(f"Erro ao processar referência {referencia} do tipo {tipo_veiculo_nome}: {str(e)}")
             conn.rollback()
             continue
 

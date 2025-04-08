@@ -7,16 +7,10 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import config
+from utils import setup_logging
 
 # Configuração do logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('referencias.log'),
-        logging.StreamHandler()
-    ]
-)
+setup_logging(__file__)
 
 def get_referencias_site(driver):
     """Obtém todas as referências disponíveis no site"""

@@ -1,16 +1,10 @@
 import psycopg2
 import logging
 import config
+from utils import setup_logging
 
 # Configuração do logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('limpar_banco.log'),
-        logging.StreamHandler()
-    ]
-)
+setup_logging(__file__)
 
 def limpar_tabelas(cur):
     """Remove todas as tabelas do banco de dados"""

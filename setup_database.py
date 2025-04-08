@@ -1,20 +1,31 @@
+# -*- coding: utf-8 -*-
 import psycopg2
 import logging
 import config
+from utils import setup_logging
 
 # Configuração do logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('setup_database.log'),
-        logging.StreamHandler()
-    ]
-)
+setup_logging(__file__)
 
 def criar_tabelas(cur):
     """Cria as tabelas necessárias se elas não existirem"""
     try:
+        # Tabela de tipo_veiculo
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tipo_veiculo (
+                id SERIAL PRIMARY KEY,
+                codigo INTEGER NOT NULL UNIQUE,
+                descricao VARCHAR(50) NOT NULL
+            )
+        """)
+        
+        # Inserir dados iniciais na tabela tipo_veiculo
+        cur.execute("""
+            INSERT INTO tipo_veiculo (codigo, descricao)
+            VALUES (0, 'carro'), (1, 'moto'), (2, 'caminhao')
+            ON CONFLICT (codigo) DO NOTHING
+        """)
+        
         # Tabela de referências
         cur.execute("""
             CREATE TABLE IF NOT EXISTS referencias (
@@ -26,14 +37,16 @@ def criar_tabelas(cur):
             )
         """)
         
-        # Tabela de marcas
+        # Tabela de marca
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS marcas (
+            CREATE TABLE IF NOT EXISTS marca (
                 id SERIAL PRIMARY KEY,
                 nome VARCHAR(100) NOT NULL,
-                tipo_veiculo VARCHAR(20) NOT NULL,
+                fipeid INTEGER NOT NULL,
+                tipo_veiculo INTEGER REFERENCES tipo_veiculo(id),
                 referencia_id INTEGER REFERENCES referencias(id),
-                UNIQUE(nome, tipo_veiculo, referencia_id)
+                UNIQUE(nome, tipo_veiculo, referencia_id),
+                UNIQUE(fipeid, tipo_veiculo, referencia_id)
             )
         """)
         
@@ -42,7 +55,7 @@ def criar_tabelas(cur):
             CREATE TABLE IF NOT EXISTS modelos (
                 id SERIAL PRIMARY KEY,
                 nome VARCHAR(100) NOT NULL,
-                marca_id INTEGER REFERENCES marcas(id),
+                marca_id INTEGER REFERENCES marca(id),
                 referencia_id INTEGER REFERENCES referencias(id),
                 UNIQUE(nome, marca_id, referencia_id)
             )
