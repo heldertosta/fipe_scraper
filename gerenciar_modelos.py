@@ -9,22 +9,55 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 import time
 import config
 from utils import setup_logging
+import argparse
 
 # Configuração do logging
 setup_logging(__file__)
 
-def get_marcas_para_processar(cur, tipo_veiculo, referencia_id):
+def verificar_tabela_modelo(cur):
+    """Verifica se a tabela modelo existe e cria se necessário"""
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS modelo (
+                id SERIAL PRIMARY KEY,
+                nome VARCHAR(255) NOT NULL,
+                fipeid INTEGER NOT NULL,
+                marca_id INTEGER NOT NULL,
+                referencia_id INTEGER NOT NULL,
+                FOREIGN KEY (marca_id) REFERENCES marca(id),
+                FOREIGN KEY (referencia_id) REFERENCES referencias(id),
+                UNIQUE (nome, marca_id, referencia_id)
+            )
+        """)
+        logging.info("Tabela modelo verificada/criada com sucesso")
+    except Exception as e:
+        logging.error(f"Erro ao verificar/criar tabela modelo: {e}")
+        raise
+
+def get_referencias(cur, referencia_especifica=None):
+    """Obtém as referências do banco"""
+    try:
+        if referencia_especifica:
+            cur.execute("SELECT id, mes_ano FROM referencias WHERE mes_ano = %s", (referencia_especifica,))
+        else:
+            cur.execute("SELECT id, mes_ano FROM referencias ORDER BY ano DESC, mes DESC")
+        return cur.fetchall()
+    except Exception as e:
+        logging.error(f"Erro ao obter referências: {e}")
+        return []
+
+def get_marcas_para_processar(cur, tipo_veiculo_id, referencia_id):
     """Obtém as marcas que precisam ter seus modelos processados"""
     try:
         cur.execute("""
-            SELECT m.id, m.nome 
-            FROM marcas m
-            LEFT JOIN modelos mo ON m.id = mo.marca_id AND mo.referencia_id = %s
+            SELECT m.id, m.nome, m.fipeid
+            FROM marca m
+            LEFT JOIN modelo mo ON m.id = mo.marca_id AND mo.referencia_id = %s
             WHERE m.tipo_veiculo = %s 
             AND m.referencia_id = %s
             AND mo.id IS NULL
             ORDER BY m.id
-        """, (referencia_id, tipo_veiculo, referencia_id))
+        """, (referencia_id, tipo_veiculo_id, referencia_id))
         return cur.fetchall()
     except Exception as e:
         logging.error(f"Erro ao obter marcas para processar: {e}")
@@ -34,7 +67,7 @@ def get_modelos_existentes(cur, marca_id, referencia_id):
     """Obtém a lista de modelos já existentes no banco para uma marca e referência"""
     try:
         cur.execute(
-            "SELECT nome FROM modelos WHERE marca_id = %s AND referencia_id = %s",
+            "SELECT nome FROM modelo WHERE marca_id = %s AND referencia_id = %s",
             (marca_id, referencia_id)
         )
         return [row[0] for row in cur.fetchall()]
@@ -47,224 +80,259 @@ def esperar_e_clicar(driver, wait, by, value, timeout=20):
     try:
         elemento = wait.until(EC.element_to_be_clickable((by, value)))
         driver.execute_script("arguments[0].scrollIntoView(true);", elemento)
-        time.sleep(2)  # Aumentado para 2 segundos
-        driver.execute_script("arguments[0].click();", elemento)
+        time.sleep(3)  # Aumentado para 3 segundos
+        elemento.click()
         return True
     except Exception as e:
         logging.error(f"Erro ao clicar no elemento {value}: {e}")
         return False
 
-def verificar_visibilidade_dropdown(driver, select_element):
-    """Verifica se o dropdown está realmente visível e utilizável"""
+def selecionar_tipo_veiculo(driver, tipo_veiculo):
+    """Seleciona o tipo de veículo na página"""
     try:
-        # Verifica se o elemento está visível
-        if not select_element.is_displayed():
-            driver.execute_script("arguments[0].style.display = 'block';", select_element)
-            time.sleep(1)
-        
-        # Verifica se o elemento tem opções
-        options = Select(select_element).options
-        if len(options) <= 1:  # Se só tem a opção vazia
-            return False
-            
+        botao = driver.find_element(By.CSS_SELECTOR, f'div.tab-veiculos ul li.ilustra a[data-slug="{tipo_veiculo}"]')
+        driver.execute_script("arguments[0].click();", botao)
+        logging.info(f"Tipo de veículo '{tipo_veiculo}' selecionado com sucesso!")
+        time.sleep(3)  # Aumentado para 3 segundos
         return True
     except Exception as e:
-        logging.error(f"Erro ao verificar visibilidade do dropdown: {e}")
+        logging.error(f"Erro ao selecionar tipo de veículo '{tipo_veiculo}': {str(e)}")
         return False
 
-def recarregar_pagina(driver, wait):
-    """Recarrega a página e aguarda o carregamento"""
+def selecionar_referencia(driver, wait, referencia, tipo_veiculo):
+    """Seleciona a referência na página"""
     try:
-        driver.refresh()
-        time.sleep(5)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        select_ref = wait.until(
+            EC.presence_of_element_located((By.ID, f"selectTabelaReferencia{tipo_veiculo}"))
+        )
+        driver.execute_script("arguments[0].style.display = 'block';", select_ref)
+        time.sleep(2)  # Aguarda o elemento ficar visível
+        select = Select(select_ref)
+        select.select_by_visible_text(referencia)
+        logging.info(f"Referência {referencia} selecionada para {tipo_veiculo}")
+        time.sleep(3)  # Aguarda o carregamento das marcas
         return True
     except Exception as e:
-        logging.error(f"Erro ao recarregar página: {e}")
+        logging.error(f"Erro ao selecionar referência {referencia}: {e}")
         return False
 
-def get_all_options(driver, select_element):
-    """Obtém todas as opções do select, incluindo as que precisam de rolagem"""
-    try:
-        # Primeiro, vamos tentar obter todas as opções visíveis
-        select = Select(select_element)
-        options = select.options[1:]  # Ignora a primeira opção vazia
-        modelos = set()  # Usa set para evitar duplicatas
-        
-        # Adiciona os modelos visíveis inicialmente
-        for option in options:
-            texto = option.text.strip()
-            if texto:
-                modelos.add(texto)
-        
-        # Tenta rolar o select para ver se há mais opções
-        for i in range(10):  # Tenta rolar até 10 vezes
-            # Rola para o último elemento visível
-            last_option = options[-1]
-            driver.execute_script("arguments[0].scrollIntoView(true);", last_option)
-            time.sleep(1)  # Aguarda a rolagem
-            
-            # Obtém as opções novamente após a rolagem
-            new_options = select.options[1:]
-            if len(new_options) == len(options):  # Se não apareceram novas opções
-                break
-                
-            # Adiciona apenas as novas opções
-            for option in new_options[len(options):]:
-                texto = option.text.strip()
-                if texto:
-                    modelos.add(texto)
-            
-            options = new_options
-        
-        return list(modelos)
-        
-    except Exception as e:
-        logging.error(f"Erro ao obter todas as opções do select: {e}")
-        return []
-
-def processar_marca(driver, wait, cur, conn, marca_id, marca_nome, referencia_id, referencia, tipo_veiculo, tentativas=2):
-    """Processa os modelos de uma marca específica"""
-    logging.info(f"Processando modelos para marca: {marca_nome}")
-    
-    for tentativa in range(tentativas):
+def selecionar_marca(driver, wait, marca_nome, tipo_veiculo):
+    """Seleciona a marca na página"""
+    max_tentativas = 3
+    for tentativa in range(max_tentativas):
         try:
-            if tentativa > 0:
-                logging.info(f"Tentativa {tentativa + 1} para a marca {marca_nome}")
-                if not recarregar_pagina(driver, wait):
-                    continue
+            # Aguarda o select de marcas ficar presente
+            select_marcas = wait.until(
+                EC.presence_of_element_located((By.ID, f"selectMarca{tipo_veiculo}"))
+            )
             
-            # Seleciona o tipo de veículo
-            if not esperar_e_clicar(
-                driver, wait, 
-                By.CSS_SELECTOR, 
-                f'div.tab-veiculos ul li.ilustra a[data-slug="{tipo_veiculo}"]'
-            ):
-                logging.error(f"Não foi possível selecionar o tipo de veículo {tipo_veiculo}")
-                continue
+            # Torna o elemento visível
+            driver.execute_script("arguments[0].style.display = 'block';", select_marcas)
+            driver.execute_script("arguments[0].style.visibility = 'visible';", select_marcas)
+            time.sleep(3)  # Aguarda o elemento ficar visível
             
-            time.sleep(5)
+            # Tenta selecionar a marca
+            select = Select(select_marcas)
             
-            # Seleciona a referência
-            try:
-                select_ref = wait.until(
-                    EC.presence_of_element_located((By.ID, f"selectTabelaReferencia{tipo_veiculo}"))
-                )
-                if not verificar_visibilidade_dropdown(driver, select_ref):
-                    logging.error("Dropdown de referência não está utilizável")
-                    continue
-                    
-                select = Select(select_ref)
-                select.select_by_visible_text(referencia)
-                time.sleep(5)
-            except Exception as e:
-                logging.error(f"Erro ao selecionar referência {referencia}: {e}")
-                continue
+            # Verifica se a marca existe nas opções (case-insensitive)
+            opcoes = [option.text.strip() for option in select.options]
+            logging.info(f"Opções disponíveis para {tipo_veiculo}: {opcoes}")
             
-            # Seleciona a marca
-            try:
-                select_marca = wait.until(
-                    EC.presence_of_element_located((By.ID, f"selectMarca{tipo_veiculo}"))
-                )
-                if not verificar_visibilidade_dropdown(driver, select_marca):
-                    logging.error("Dropdown de marca não está utilizável")
-                    continue
-                    
-                select = Select(select_marca)
-                select.select_by_visible_text(marca_nome)
-                time.sleep(5)
-            except Exception as e:
-                logging.error(f"Erro ao selecionar marca {marca_nome}: {e}")
-                continue
+            # Procura a marca nas opções (case-insensitive)
+            marca_encontrada = None
+            for opcao in opcoes:
+                if opcao.upper() == marca_nome.upper():
+                    marca_encontrada = opcao
+                    break
             
-            # Obtém os modelos
-            try:
-                select_modelo = wait.until(
-                    EC.presence_of_element_located((By.ID, f"selectAnoModelo{tipo_veiculo}"))
-                )
-                if not verificar_visibilidade_dropdown(driver, select_modelo):
-                    logging.error("Dropdown de modelo não está utilizável")
-                    continue
-                
-                # Obtém todos os modelos, incluindo os que precisam de rolagem
-                modelos = get_all_options(driver, select_modelo)
-                
-                if not modelos:
-                    logging.warning(f"Nenhum modelo encontrado para a marca {marca_nome}")
-                    return True
-                
-                # Obtém modelos existentes
-                modelos_existentes = get_modelos_existentes(cur, marca_id, referencia_id)
-                
-                # Filtra apenas os modelos que não existem no banco
-                novos_modelos = [modelo for modelo in modelos if modelo not in modelos_existentes]
-                
-                if not novos_modelos:
-                    logging.info(f"Não há novos modelos para adicionar para a marca {marca_nome}")
-                    return True
-                
-                # Insere os novos modelos no banco
-                for modelo in novos_modelos:
-                    try:
-                        cur.execute(
-                            "INSERT INTO modelos (nome, marca_id, referencia_id) VALUES (%s, %s, %s)",
-                            (modelo, marca_id, referencia_id)
-                        )
-                    except psycopg2.IntegrityError:
-                        # Ignora erros de chave duplicada
-                        continue
-                
-                conn.commit()
-                logging.info(f"Adicionados {len(novos_modelos)} novos modelos para a marca {marca_nome}")
-                return True
-                
-            except Exception as e:
-                logging.error(f"Erro ao obter modelos para marca {marca_nome}: {e}")
-                continue
+            if not marca_encontrada:
+                logging.error(f"Marca {marca_nome} não encontrada nas opções disponíveis")
+                return False
+            
+            select.select_by_visible_text(marca_encontrada)
+            logging.info(f"Marca {marca_encontrada} selecionada")
+            time.sleep(3)  # Aguarda o carregamento dos modelos
+            return True
             
         except Exception as e:
-            logging.error(f"Erro ao processar marca {marca_nome} (tentativa {tentativa + 1}): {str(e)}")
-            conn.rollback()
-            continue
-    
-    logging.error(f"Todas as tentativas falharam para a marca {marca_nome}")
+            if tentativa == max_tentativas - 1:
+                logging.error(f"Erro ao selecionar marca {marca_nome}: {e}")
+                return False
+            logging.warning(f"Tentativa {tentativa + 1} falhou, tentando novamente...")
+            time.sleep(2)  # Espera antes de tentar novamente
     return False
 
-def processar_referencia(driver, wait, cur, conn, referencia_id, referencia, tipo_veiculo):
-    """Processa uma referência específica para um tipo de veículo"""
-    logging.info(f"Processando referência: {referencia} para {tipo_veiculo}")
-    
+def get_modelos_site(driver, wait, tipo_veiculo):
+    """Obtém a lista de modelos do site para a marca selecionada"""
+    max_tentativas = 3
+    for tentativa in range(max_tentativas):
+        try:
+            # Aguarda o select de modelos ficar presente
+            select_modelos = wait.until(
+                EC.presence_of_element_located((By.ID, f"selectAnoModelo{tipo_veiculo}"))
+            )
+            
+            # Usa JavaScript para obter os modelos, similar ao comando do DevTools
+            modelos_js = driver.execute_script("""
+                return Array.from(document.getElementById(arguments[0]))
+                    .map(option => ({
+                        nome: option.text.trim(),
+                        fipeid: option.value
+                    }))
+                    .filter(item => item.nome !== '');
+            """, f"selectAnoModelo{tipo_veiculo}")
+            
+            if not modelos_js:
+                logging.warning(f"Nenhum modelo encontrado na tentativa {tentativa + 1}")
+                if tentativa < max_tentativas - 1:
+                    time.sleep(5)  # Espera mais tempo antes de tentar novamente
+                    continue
+                else:
+                    logging.error("Nenhum modelo encontrado após todas as tentativas")
+                    return []
+            
+            # Converte os modelos para o formato esperado
+            modelos = []
+            for modelo in modelos_js:
+                if modelo['nome'] and modelo['fipeid']:
+                    modelos.append({
+                        'nome': modelo['nome'].upper(),
+                        'fipeid': int(modelo['fipeid'])
+                    })
+            
+            logging.info(f"Encontrados {len(modelos)} modelos")
+            return modelos
+            
+        except Exception as e:
+            if tentativa == max_tentativas - 1:
+                logging.error(f"Erro ao obter modelos do site: {e}")
+                return []
+            logging.warning(f"Tentativa {tentativa + 1} falhou, tentando novamente...")
+            time.sleep(5)  # Espera antes de tentar novamente
+    return []
+
+def processar_marca(driver, wait, cur, conn, marca_id, marca_nome, referencia_id, referencia, tipo_veiculo):
+    """Processa os modelos para uma marca específica"""
     try:
-        # Obtém marcas para processar
-        marcas = get_marcas_para_processar(cur, tipo_veiculo, referencia_id)
+        # Obtém modelos existentes para esta marca e referência
+        modelos_existentes = get_modelos_existentes(cur, marca_id, referencia_id)
         
-        if not marcas:
-            logging.info(f"Não há marcas para processar para a referência {referencia}")
+        # Seleciona a marca na página
+        if not selecionar_marca(driver, wait, marca_nome, tipo_veiculo):
             return
         
-        for marca_id, marca_nome in marcas:
-            if not processar_marca(driver, wait, cur, conn, marca_id, marca_nome, referencia_id, referencia, tipo_veiculo):
-                logging.warning(f"Pulando marca {marca_nome} devido a erro no processamento")
-                continue
-            time.sleep(3)  # Espera entre processamento de marcas
+        # Obtém modelos do site
+        modelos = get_modelos_site(driver, wait, tipo_veiculo)
+        
+        if not modelos:
+            logging.warning(f"Nenhum modelo encontrado para a marca {marca_nome} e referência {referencia}")
+            return
+        
+        # Filtra apenas os modelos que não existem no banco para esta marca e referência
+        novos_modelos = [modelo for modelo in modelos if modelo['nome'] not in modelos_existentes]
+        
+        if not novos_modelos:
+            logging.info(f"Não há novos modelos para adicionar para a marca {marca_nome} e referência {referencia}")
+            return
+        
+        # Insere os novos modelos no banco
+        for modelo in novos_modelos:
+            cur.execute(
+                "INSERT INTO modelo (nome, fipeid, marca_id, referencia_id) VALUES (%s, %s, %s, %s)",
+                (modelo['nome'], modelo['fipeid'], marca_id, referencia_id)
+            )
+        
+        conn.commit()
+        logging.info(f"Adicionados {len(novos_modelos)} novos modelos para a marca {marca_nome} e referência {referencia}")
         
     except Exception as e:
-        logging.error(f"Erro ao processar referência {referencia}: {str(e)}")
+        logging.error(f"Erro ao processar marca {marca_nome} e referência {referencia}: {str(e)}")
         conn.rollback()
 
+def processar_referencia(driver, wait, cur, conn, referencia_id, referencia, tipo_veiculo):
+    """Processa os modelos para uma referência específica"""
+    try:
+        # Reinicia a transação se necessário
+        if conn.closed:
+            conn = psycopg2.connect(**config.DB_CONFIG)
+            cur = conn.cursor()
+        
+        # Seleciona o tipo de veículo
+        if not selecionar_tipo_veiculo(driver, tipo_veiculo):
+            return
+        
+        # Seleciona a referência
+        if not selecionar_referencia(driver, wait, referencia, tipo_veiculo):
+            return
+        
+        # Obtém o ID do tipo de veículo
+        tipo_veiculo_id = get_tipo_veiculo_id(cur, tipo_veiculo)
+        if not tipo_veiculo_id:
+            logging.error(f"Tipo de veículo {tipo_veiculo} não encontrado")
+            return
+        
+        # Obtém marcas para processar
+        marcas = get_marcas_para_processar(cur, tipo_veiculo_id, referencia_id)
+        
+        if not marcas:
+            logging.warning(f"Nenhuma marca encontrada para a referência {referencia} do tipo {tipo_veiculo}")
+            return
+        
+        for marca_id, marca_nome, marca_fipeid in marcas:
+            logging.info(f"Processando marca: {marca_nome}")
+            processar_marca(driver, wait, cur, conn, marca_id, marca_nome, referencia_id, referencia, tipo_veiculo)
+            
+    except Exception as e:
+        logging.error(f"Erro ao processar referência {referencia}: {e}")
+        conn.rollback()
+    finally:
+        # Commit da transação
+        try:
+            conn.commit()
+        except Exception as e:
+            logging.error(f"Erro ao commitar transação: {e}")
+            conn.rollback()
+
+def get_tipo_veiculo_id(cur, tipo_veiculo_nome):
+    """Obtém o ID do tipo de veículo pelo nome"""
+    try:
+        cur.execute(
+            "SELECT id FROM tipo_veiculo WHERE descricao = %s",
+            (tipo_veiculo_nome,)
+        )
+        result = cur.fetchone()
+        if result:
+            return result[0]
+        else:
+            raise Exception(f"Tipo de veículo não encontrado: {tipo_veiculo_nome}")
+    except Exception as e:
+        logging.error(f"Erro ao obter ID do tipo de veículo: {e}")
+        raise
+
 def main():
+    parser = argparse.ArgumentParser(description='Processa modelos de veículos da FIPE')
+    parser.add_argument('--referencia', type=str, help='Mês/Ano da referência específica (ex: "abril/2025")')
+    args = parser.parse_args()
+    
     try:
         # Conecta ao banco de dados
         logging.info("Conectando ao banco de dados...")
         conn = psycopg2.connect(**config.DB_CONFIG)
         cur = conn.cursor()
         
+        # Verifica/cria a tabela modelo
+        verificar_tabela_modelo(cur)
+        conn.commit()
+        
         # Obtém as referências do banco
-        cur.execute("SELECT id, mes_ano FROM referencias ORDER BY id")
-        referencias = cur.fetchall()
+        referencias = get_referencias(cur, args.referencia)
+        logging.info(f"Encontradas {len(referencias)} referências no banco")
         
         if not referencias:
-            logging.info("Não há referências para processar")
+            if args.referencia:
+                logging.error(f"Referência {args.referencia} não encontrada")
+            else:
+                logging.info("Não há referências para processar")
             return
         
         # Configuração do Chrome
@@ -277,9 +345,6 @@ def main():
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-extensions')
         chrome_options.add_argument('--disable-infobars')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
         
         # Inicializa o driver
         driver = webdriver.Chrome(options=chrome_options)
@@ -290,15 +355,17 @@ def main():
         logging.info(f"Acessando a página: {url}")
         
         # Aguarda o carregamento da página
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 10)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        time.sleep(5)
+        time.sleep(3)
         
         # Processa cada tipo de veículo
         tipos_veiculos = ['carro', 'caminhao', 'moto']
+        
         for tipo_veiculo in tipos_veiculos:
             logging.info(f"Iniciando processamento para {tipo_veiculo}")
             for referencia_id, referencia in referencias:
+                logging.info(f"Processando referência: {referencia}")
                 processar_referencia(driver, wait, cur, conn, referencia_id, referencia, tipo_veiculo)
         
         logging.info("Processo concluído com sucesso!")
