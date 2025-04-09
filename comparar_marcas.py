@@ -9,15 +9,18 @@ setup_logging(__file__)
 def comparar_marcas():
     try:
         # Lê o arquivo marcas_fipescrapper.csv
-        marcas_fipe = {}
+        marcas_fipe = set()
         with open('marcas_fipescrapper.csv', 'r', encoding='utf-8') as arquivo_fipe:
             reader = csv.reader(arquivo_fipe)
             next(reader)  # Pula o cabeçalho
             for linha in reader:
                 nome_marca = linha[0].strip().upper()  # Nome da marca
-                fipeid = linha[1]  # FipeID
-                codigo_tipo = linha[2]  # Código do tipo de veículo
-                marcas_fipe[nome_marca] = (fipeid, codigo_tipo)
+                fipeid = linha[1].strip('"')  # FipeID (remove aspas)
+                codigo_tipo = linha[2].strip()  # Código do tipo de veículo
+                # Cria uma tupla única para cada marca
+                marca = (nome_marca, fipeid, codigo_tipo)
+                marcas_fipe.add(marca)
+                logging.debug(f"FIPE - Marca: {nome_marca}, FipeID: {fipeid}, Tipo: {codigo_tipo}")
         
         # Lê o arquivo marcas_ojc.csv
         marcas_ojc = set()
@@ -26,10 +29,15 @@ def comparar_marcas():
             next(reader)  # Pula o cabeçalho
             for linha in reader:
                 nome_marca = linha[0].strip().upper()  # Nome da marca
-                marcas_ojc.add(nome_marca)
+                fipeid = linha[1].strip('"')  # FipeID (remove aspas)
+                codigo_tipo = linha[2].strip()  # Código do tipo de veículo
+                # Cria uma tupla única para cada marca
+                marca = (nome_marca, fipeid, codigo_tipo)
+                marcas_ojc.add(marca)
+                logging.debug(f"OJC - Marca: {nome_marca}, FipeID: {fipeid}, Tipo: {codigo_tipo}")
         
         # Encontra as marcas que estão apenas no arquivo marcas_fipescrapper.csv
-        marcas_apenas_fipe = set(marcas_fipe.keys()) - marcas_ojc
+        marcas_apenas_fipe = marcas_fipe - marcas_ojc
         
         # Gera o nome do arquivo com o mês e ano atual
         data_atual = datetime.now()
@@ -38,14 +46,20 @@ def comparar_marcas():
         # Escreve os inserts no arquivo SQL
         with open(nome_arquivo, 'w', encoding='utf-8') as arquivo_sql:
             for marca in sorted(marcas_apenas_fipe):
-                fipeid, codigo_tipo = marcas_fipe[marca]
-                insert = f"INSERT INTO marca (descricao, fipeid, tipoveiculo) VALUES ('{marca}', '{fipeid}', {codigo_tipo});\n"
+                nome, fipeid, codigo_tipo = marca
+                insert = f"INSERT INTO marca (descricao, fipeid, tipoveiculo) VALUES ('{nome}', '{fipeid}', {codigo_tipo});\n"
                 arquivo_sql.write(insert)
         
         logging.info(f"Total de marcas no arquivo marcas_fipescrapper.csv: {len(marcas_fipe)}")
         logging.info(f"Total de marcas no arquivo marcas_ojc.csv: {len(marcas_ojc)}")
         logging.info(f"Total de marcas para inserir: {len(marcas_apenas_fipe)}")
         logging.info(f"Arquivo {nome_arquivo} criado com sucesso!")
+        
+        # Log das marcas que estão apenas no arquivo FIPE
+        logging.info("Marcas que estão apenas no arquivo FIPE:")
+        for marca in sorted(marcas_apenas_fipe):
+            nome, fipeid, codigo_tipo = marca
+            logging.info(f"- {nome} (FipeID: {fipeid}, Tipo: {codigo_tipo})")
         
     except Exception as e:
         logging.error(f"Erro ao comparar os arquivos: {str(e)}")

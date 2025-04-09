@@ -46,18 +46,18 @@ def get_referencias(cur, referencia_especifica=None):
         logging.error(f"Erro ao obter referências: {e}")
         return []
 
-def get_marcas_para_processar(cur, tipo_veiculo_id, referencia_id):
+def get_marcas_para_processar(cur, tipo_veiculo, referencia_id):
     """Obtém as marcas que precisam ter seus modelos processados"""
     try:
         cur.execute("""
-            SELECT m.id, m.nome, m.fipeid
+            SELECT m.id, m.nome 
             FROM marca m
             LEFT JOIN modelo mo ON m.id = mo.marca_id AND mo.referencia_id = %s
             WHERE m.tipo_veiculo = %s 
             AND m.referencia_id = %s
             AND mo.id IS NULL
             ORDER BY m.id
-        """, (referencia_id, tipo_veiculo_id, referencia_id))
+        """, (referencia_id, tipo_veiculo, referencia_id))
         return cur.fetchall()
     except Exception as e:
         logging.error(f"Erro ao obter marcas para processar: {e}")
@@ -116,100 +116,52 @@ def selecionar_referencia(driver, wait, referencia, tipo_veiculo):
         logging.error(f"Erro ao selecionar referência {referencia}: {e}")
         return False
 
-def selecionar_marca(driver, wait, marca_nome, tipo_veiculo):
+def selecionar_marca(driver, wait, marca, tipo_veiculo):
     """Seleciona a marca na página"""
-    max_tentativas = 3
-    for tentativa in range(max_tentativas):
-        try:
-            # Aguarda o select de marcas ficar presente
-            select_marcas = wait.until(
-                EC.presence_of_element_located((By.ID, f"selectMarca{tipo_veiculo}"))
-            )
-            
-            # Torna o elemento visível
-            driver.execute_script("arguments[0].style.display = 'block';", select_marcas)
-            driver.execute_script("arguments[0].style.visibility = 'visible';", select_marcas)
-            time.sleep(3)  # Aguarda o elemento ficar visível
-            
-            # Tenta selecionar a marca
-            select = Select(select_marcas)
-            
-            # Verifica se a marca existe nas opções (case-insensitive)
-            opcoes = [option.text.strip() for option in select.options]
-            logging.info(f"Opções disponíveis para {tipo_veiculo}: {opcoes}")
-            
-            # Procura a marca nas opções (case-insensitive)
-            marca_encontrada = None
-            for opcao in opcoes:
-                if opcao.upper() == marca_nome.upper():
-                    marca_encontrada = opcao
-                    break
-            
-            if not marca_encontrada:
-                logging.error(f"Marca {marca_nome} não encontrada nas opções disponíveis")
-                return False
-            
-            select.select_by_visible_text(marca_encontrada)
-            logging.info(f"Marca {marca_encontrada} selecionada")
-            time.sleep(3)  # Aguarda o carregamento dos modelos
-            return True
-            
-        except Exception as e:
-            if tentativa == max_tentativas - 1:
-                logging.error(f"Erro ao selecionar marca {marca_nome}: {e}")
-                return False
-            logging.warning(f"Tentativa {tentativa + 1} falhou, tentando novamente...")
-            time.sleep(2)  # Espera antes de tentar novamente
-    return False
+    try:
+        select_marcas = wait.until(
+            EC.presence_of_element_located((By.ID, f"selectMarca{tipo_veiculo}"))
+        )
+        driver.execute_script("arguments[0].style.display = 'block';", select_marcas)
+        time.sleep(2)  # Aguarda o elemento ficar visível
+        select = Select(select_marcas)
+        select.select_by_visible_text(marca)
+        logging.info(f"Marca {marca} selecionada")
+        time.sleep(3)  # Aguarda o carregamento dos modelos
+        return True
+    except Exception as e:
+        logging.error(f"Erro ao selecionar marca {marca}: {e}")
+        return False
 
 def get_modelos_site(driver, wait, tipo_veiculo):
     """Obtém a lista de modelos do site para a marca selecionada"""
-    max_tentativas = 3
-    for tentativa in range(max_tentativas):
-        try:
-            # Aguarda o select de modelos ficar presente
-            select_modelos = wait.until(
-                EC.presence_of_element_located((By.ID, f"selectAnoModelo{tipo_veiculo}"))
-            )
-            
-            # Usa JavaScript para obter os modelos, similar ao comando do DevTools
-            modelos_js = driver.execute_script("""
-                return Array.from(document.getElementById(arguments[0]))
-                    .map(option => ({
-                        nome: option.text.trim(),
-                        fipeid: option.value
-                    }))
-                    .filter(item => item.nome !== '');
-            """, f"selectAnoModelo{tipo_veiculo}")
-            
-            if not modelos_js:
-                logging.warning(f"Nenhum modelo encontrado na tentativa {tentativa + 1}")
-                if tentativa < max_tentativas - 1:
-                    time.sleep(5)  # Espera mais tempo antes de tentar novamente
-                    continue
-                else:
-                    logging.error("Nenhum modelo encontrado após todas as tentativas")
-                    return []
-            
-            # Converte os modelos para o formato esperado
-            modelos = []
-            for modelo in modelos_js:
-                if modelo['nome'] and modelo['fipeid']:
-                    modelos.append({
-                        'nome': modelo['nome'].upper(),
-                        'fipeid': int(modelo['fipeid'])
-                    })
-            
-            logging.info(f"Encontrados {len(modelos)} modelos")
-            return modelos
-            
-        except Exception as e:
-            if tentativa == max_tentativas - 1:
-                logging.error(f"Erro ao obter modelos do site: {e}")
-                return []
-            logging.warning(f"Tentativa {tentativa + 1} falhou, tentando novamente...")
-            time.sleep(5)  # Espera antes de tentar novamente
-    return []
+    try:
+        select_modelos = wait.until(
+            EC.presence_of_element_located((By.ID, f"selectModelo{tipo_veiculo}"))
+        )
+        driver.execute_script("arguments[0].style.display = 'block';", select_modelos)
+        time.sleep(2)  # Aguarda o elemento ficar visível
+        select = Select(select_modelos)
+        
+        # Obtém todas as opções do select
+        options = select.options
+        modelos = []
+        
+        # Itera sobre as opções para obter o texto e o value (fipeid)
+        for option in options:
+            if option.text and option.text.strip():
+                modelo = {
+                    'nome': option.text.strip().upper(),
+                    'fipeid': int(option.get_attribute('value'))
+                }
+                modelos.append(modelo)
+        
+        logging.info(f"Encontrados {len(modelos)} modelos")
+        return modelos
+        
+    except Exception as e:
+        logging.error(f"Erro ao obter modelos do site: {e}")
+        return []
 
 def processar_marca(driver, wait, cur, conn, marca_id, marca_nome, referencia_id, referencia, tipo_veiculo):
     """Processa os modelos para uma marca específica"""
@@ -252,11 +204,6 @@ def processar_marca(driver, wait, cur, conn, marca_id, marca_nome, referencia_id
 def processar_referencia(driver, wait, cur, conn, referencia_id, referencia, tipo_veiculo):
     """Processa os modelos para uma referência específica"""
     try:
-        # Reinicia a transação se necessário
-        if conn.closed:
-            conn = psycopg2.connect(**config.DB_CONFIG)
-            cur = conn.cursor()
-        
         # Seleciona o tipo de veículo
         if not selecionar_tipo_veiculo(driver, tipo_veiculo):
             return
@@ -265,49 +212,20 @@ def processar_referencia(driver, wait, cur, conn, referencia_id, referencia, tip
         if not selecionar_referencia(driver, wait, referencia, tipo_veiculo):
             return
         
-        # Obtém o ID do tipo de veículo
-        tipo_veiculo_id = get_tipo_veiculo_id(cur, tipo_veiculo)
-        if not tipo_veiculo_id:
-            logging.error(f"Tipo de veículo {tipo_veiculo} não encontrado")
-            return
-        
         # Obtém marcas para processar
-        marcas = get_marcas_para_processar(cur, tipo_veiculo_id, referencia_id)
+        marcas = get_marcas_para_processar(cur, tipo_veiculo, referencia_id)
         
         if not marcas:
-            logging.warning(f"Nenhuma marca encontrada para a referência {referencia} do tipo {tipo_veiculo}")
+            logging.info(f"Não há marcas para processar para a referência {referencia} do tipo {tipo_veiculo}")
             return
         
-        for marca_id, marca_nome, marca_fipeid in marcas:
-            logging.info(f"Processando marca: {marca_nome}")
+        for marca_id, marca_nome in marcas:
+            logging.info(f"Processando marca: {marca_nome} para referência {referencia}")
             processar_marca(driver, wait, cur, conn, marca_id, marca_nome, referencia_id, referencia, tipo_veiculo)
             
     except Exception as e:
         logging.error(f"Erro ao processar referência {referencia}: {e}")
         conn.rollback()
-    finally:
-        # Commit da transação
-        try:
-            conn.commit()
-        except Exception as e:
-            logging.error(f"Erro ao commitar transação: {e}")
-            conn.rollback()
-
-def get_tipo_veiculo_id(cur, tipo_veiculo_nome):
-    """Obtém o ID do tipo de veículo pelo nome"""
-    try:
-        cur.execute(
-            "SELECT id FROM tipo_veiculo WHERE descricao = %s",
-            (tipo_veiculo_nome,)
-        )
-        result = cur.fetchone()
-        if result:
-            return result[0]
-        else:
-            raise Exception(f"Tipo de veículo não encontrado: {tipo_veiculo_nome}")
-    except Exception as e:
-        logging.error(f"Erro ao obter ID do tipo de veículo: {e}")
-        raise
 
 def main():
     parser = argparse.ArgumentParser(description='Processa modelos de veículos da FIPE')

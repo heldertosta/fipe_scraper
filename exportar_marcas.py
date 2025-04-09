@@ -1,5 +1,4 @@
 import psycopg2
-import csv
 import config
 import logging
 from utils import setup_logging
@@ -13,16 +12,22 @@ def exportar_marcas_para_csv():
         conn = psycopg2.connect(**config.DB_CONFIG)
         cur = conn.cursor()
         
-        # Consulta SQL para obter as marcas com referencia_id = 1
+        # Consulta SQL para obter as marcas
         query = """
-        SELECT 
-            m.nome,
-            m.fipeid::text,            
-            tv.codigo as codigo_tipo_veiculo
-        FROM marca m
-        JOIN tipo_veiculo tv ON m.tipo_veiculo = tv.id
-        WHERE m.referencia_id = 1
-        ORDER BY m.nome, m.fipeid
+select
+	marca.nome, 
+	marca.fipeid, 
+	tipo_veiculo.codigo
+from
+	marca
+inner join tipo_veiculo on
+	marca.tipo_veiculo = tipo_veiculo.id
+group by
+	marca.nome,
+	marca.fipeid,
+	tipo_veiculo.codigo
+order by
+	marca.nome
         """
         
         # Executa a consulta
@@ -34,14 +39,12 @@ def exportar_marcas_para_csv():
         
         # Escreve os resultados no arquivo CSV
         with open(nome_arquivo, 'w', newline='', encoding='utf-8') as arquivo_csv:
-            writer = csv.writer(arquivo_csv)
-            
             # Escreve o cabeçalho
-            writer.writerow(['descricao', 'fipeid', 'tipoveiculo'])
+            arquivo_csv.write('descricao,fipeid,tipoveiculo\n')
             
             # Escreve os dados
             for linha in resultados:
-                writer.writerow(linha)
+                arquivo_csv.write(f'{linha[0]},"{linha[1]}",{linha[2]}\n')
         
         logging.info(f"Arquivo {nome_arquivo} criado com sucesso!")
         logging.info(f"Total de {len(resultados)} marcas exportadas.")
